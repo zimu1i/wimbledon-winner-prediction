@@ -1,17 +1,9 @@
 #!/usr/bin/env python3
 """
-Wimbledon 2026 Prediction System  (v2 — improved)
+Wimbledon 2026 Prediction System  (v3)
 - ATP (Men's): XGBoost + isotonic calibration trained on all surfaces
-- WTA (Women's): ELO-based model using embedded player ratings
+- WTA (Women's): identical ML pipeline using JeffSackmann/tennis_wta data
 - Tournament outcomes via Monte Carlo simulation (10,000 iterations each)
-
-Improvements over v1:
-  • Train on ALL surface matches (~9× more data) with is_grass flag + grass upweighting
-  • H2H win rate tracked incrementally inside EloEngine (no leakage)
-  • Short-window form features: 90-day all-surface and 90-day grass
-  • Best-of-5 (Grand Slam) win rate — Wimbledon specific
-  • Isotonic calibration layer fitted on 2024, tested on 2025
-  • Full metrics: precision @ confidence thresholds, Brier, AUC-ROC, calibration table
 """
 
 import os
@@ -27,7 +19,9 @@ from sklearn.metrics import (
 
 warnings.filterwarnings("ignore")
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "tennis_atp")
+ATP_DIR = os.path.join(os.path.dirname(__file__), "..", "tennis_atp")
+WTA_DIR = os.path.join(os.path.dirname(__file__), "..", "tennis_wta")
+DATA_DIR = ATP_DIR   # kept for backward compat inside helpers
 INITIAL_ELO = 1500
 K_ALL   = 32
 K_GRASS = 40       # higher K → surface ELO adapts faster to recent grass results
@@ -37,17 +31,18 @@ CALIB_YEAR     = 2023
 
 
 # ---------------------------------------------------------------------------
-# 1. DATA LOADING
+# 1. DATA LOADING  (generic — used by both ATP and WTA)
 # ---------------------------------------------------------------------------
 
-def load_atp_data(start_year: int = 2010, end_year: int = 2026) -> pd.DataFrame:
+def _load_matches(data_dir: str, prefix: str, levels: list,
+                  start_year: int = 2010, end_year: int = 2026) -> pd.DataFrame:
     dfs = []
     for year in range(start_year, end_year + 1):
-        path = os.path.join(DATA_DIR, f"atp_matches_{year}.csv")
+        path = os.path.join(data_dir, f"{prefix}_matches_{year}.csv")
         if os.path.exists(path):
             dfs.append(pd.read_csv(path, low_memory=False))
     df = pd.concat(dfs, ignore_index=True)
-    df = df[df["tourney_level"].isin(["G", "M", "A", "F"])]
+    df = df[df["tourney_level"].isin(levels)]
     invalid = df["score"].str.contains(r"W/O|RET|DEF|walkover", case=False, na=True)
     df = df[~invalid].copy()
     df["tourney_date"] = pd.to_datetime(df["tourney_date"].astype(str), format="%Y%m%d")
@@ -55,17 +50,43 @@ def load_atp_data(start_year: int = 2010, end_year: int = 2026) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
-def load_current_rankings() -> dict:
-    df = pd.read_csv(os.path.join(DATA_DIR, "atp_rankings_current.csv"))
+def load_atp_data(start_year: int = 2010, end_year: int = 2026) -> pd.DataFrame:
+    # G=Grand Slam  M=Masters  A=ATP 500/250  F=Finals
+    return _load_matches(ATP_DIR, "atp", ["G", "M", "A", "F"], start_year, end_year)
+
+
+def load_wta_data(start_year: int = 2010, end_year: int = 2026) -> pd.DataFrame:
+    # G=Grand Slam  PM=Premier Mandatory  P=Premier  I=International  F=Finals
+    return _load_matches(WTA_DIR, "wta", ["G", "PM", "P", "I", "F"], start_year, end_year)
+
+
+def _load_rankings(data_dir: str, filename: str) -> dict:
+    df = pd.read_csv(os.path.join(data_dir, filename))
     latest = df["ranking_date"].max()
     return dict(zip(df.loc[df["ranking_date"] == latest, "player"],
                     df.loc[df["ranking_date"] == latest, "rank"]))
 
 
-def load_player_names() -> dict:
-    df = pd.read_csv(os.path.join(DATA_DIR, "atp_players.csv"), low_memory=False)
+def load_current_rankings() -> dict:
+    return _load_rankings(ATP_DIR, "atp_rankings_current.csv")
+
+
+def load_wta_rankings() -> dict:
+    return _load_rankings(WTA_DIR, "wta_rankings_current.csv")
+
+
+def _load_player_names(data_dir: str, filename: str) -> dict:
+    df = pd.read_csv(os.path.join(data_dir, filename), low_memory=False)
     df["full_name"] = df["name_first"].str.strip() + " " + df["name_last"].str.strip()
     return dict(zip(df["player_id"], df["full_name"]))
+
+
+def load_player_names() -> dict:
+    return _load_player_names(ATP_DIR, "atp_players.csv")
+
+
+def load_wta_player_names() -> dict:
+    return _load_player_names(WTA_DIR, "wta_players.csv")
 
 
 # ---------------------------------------------------------------------------
@@ -350,7 +371,7 @@ def _build_stats(df_context: pd.DataFrame):
     }
 
 
-def _print_metrics(y_true, proba, label=""):
+def _print_metrics(y_true, proba, label="", tag="ATP"):
     """Print comprehensive evaluation metrics."""
     y_pred = (proba >= 0.5).astype(int)
     acc    = accuracy_score(y_true, y_pred)
@@ -358,14 +379,13 @@ def _print_metrics(y_true, proba, label=""):
     brier  = brier_score_loss(y_true, proba)
     auc    = roc_auc_score(y_true, proba)
 
-    print(f"\n[ATP] {label}Evaluation metrics:")
+    print(f"\n[{tag}] {label}Evaluation metrics:")
     print(f"      Accuracy  : {acc:.4f}")
     print(f"      Log-loss  : {ll:.4f}")
     print(f"      Brier     : {brier:.4f}  (lower = better, perfect = 0)")
     print(f"      AUC-ROC   : {auc:.4f}")
 
-    # Precision at confidence thresholds
-    print(f"\n[ATP] Precision at confidence thresholds (higher threshold = model is certain):")
+    print(f"\n[{tag}] Precision at confidence thresholds:")
     print(f"      {'Threshold':<12} {'Precision':>10} {'Coverage':>10} {'n samples':>10}")
     for thresh in [0.55, 0.60, 0.65, 0.70, 0.75]:
         mask = proba >= thresh
@@ -377,8 +397,7 @@ def _print_metrics(y_true, proba, label=""):
         cov  = mask.mean()
         print(f"      {thresh:.0%}         {prec:>10.4f} {cov:>10.2%} {n:>10,}")
 
-    # Calibration table — are stated probabilities accurate?
-    print(f"\n[ATP] Calibration (predicted prob vs actual win rate):")
+    print(f"\n[{tag}] Calibration (predicted prob vs actual win rate):")
     print(f"      {'Bin':<14} {'Predicted':>10} {'Actual':>10} {'n':>8}")
     bins = [(0.45,0.55),(0.55,0.65),(0.65,0.75),(0.75,0.85),(0.85,1.01)]
     for lo, hi in bins:
@@ -390,6 +409,8 @@ def _print_metrics(y_true, proba, label=""):
         act_mean  = y_true[mask].mean()
         flag = " ✓" if abs(pred_mean - act_mean) < 0.05 else " ✗ (miscal.)"
         print(f"      {lo:.0%}–{hi:.0%}       {pred_mean:>10.3f} {act_mean:>10.3f} {n:>8,}{flag}")
+
+    return ll  # return so callers can compare
 
 
 def train_atp_model(df_train, df_calib, df_val):
@@ -457,15 +478,22 @@ def train_atp_model(df_train, df_calib, df_val):
     raw_proba = xgb.predict_proba(X_g)[:, 1]
     cal_proba = calibrated.predict_proba(X_g)[:, 1]
 
-    _print_metrics(y_g, raw_proba, label="Uncalibrated XGBoost — ")
-    _print_metrics(y_g, cal_proba, label="Calibrated model — ")
+    raw_ll = _print_metrics(y_g, raw_proba, label="Uncalibrated XGBoost — ", tag="ATP")
+    cal_ll = _print_metrics(y_g, cal_proba, label="Calibrated model — ",     tag="ATP")
+
+    # Fall back to uncalibrated if isotonic overfit the small calibration set
+    if cal_ll > raw_ll:
+        print("\n[ATP] Calibration increased loss — using uncalibrated model for predictions.")
+        final_model = xgb
+    else:
+        final_model = calibrated
 
     print("\n[ATP] Feature importances (XGBoost):")
     for name, imp in sorted(zip(FEATURE_NAMES, xgb.feature_importances_),
                              key=lambda x: -x[1]):
         print(f"       {name:<24} {imp:.4f}")
 
-    return calibrated, engine, stats_val, rankings
+    return final_model, engine, stats_val, rankings
 
 
 # ---------------------------------------------------------------------------
@@ -555,131 +583,83 @@ def simulate_atp_wimbledon(model, draw, stats, rankings, n_sims=N_SIMS):
 
 
 # ---------------------------------------------------------------------------
-# 7. WTA DATA  (embedded — no WTA CSV in repo)
+# 7. WTA PIPELINE  (mirrors ATP exactly — real match data from tennis_wta)
 # ---------------------------------------------------------------------------
-#
-# Grass ELO estimates based on Wimbledon titles/finals 2022-2025 and WTA rankings.
-# ELO scale: INITIAL=1500; top-10 range ≈ 1700-1950.
 
-WTA_PLAYERS = [
-    # (name, country, rank_2026, grass_elo, overall_elo, age)
-    ("Aryna Sabalenka",          "BLR",  1,  1850, 1940, 28),
-    ("Coco Gauff",               "USA",  2,  1820, 1890, 22),
-    ("Iga Swiatek",              "POL",  3,  1770, 1920, 25),
-    ("Elena Rybakina",           "KAZ",  4,  1930, 1880, 27),
-    ("Madison Keys",             "USA",  5,  1780, 1840, 31),
-    ("Mirra Andreeva",           "RUS",  6,  1760, 1820, 19),
-    ("Qinwen Zheng",             "CHN",  7,  1750, 1820, 23),
-    ("Jessica Pegula",           "USA",  8,  1760, 1840, 32),
-    ("Jasmine Paolini",          "ITA",  9,  1810, 1840, 29),
-    ("Emma Navarro",             "USA", 10,  1790, 1810, 24),
-    ("Barbora Krejcikova",       "CZE", 11,  1890, 1830, 29),
-    ("Daria Kasatkina",          "RUS", 12,  1750, 1790, 28),
-    ("Liudmila Samsonova",       "RUS", 13,  1740, 1780, 26),
-    ("Paula Badosa",             "ESP", 14,  1740, 1780, 27),
-    ("Anna Kalinskaya",          "RUS", 15,  1720, 1760, 26),
-    ("Ons Jabeur",               "TUN", 16,  1830, 1790, 31),
-    ("Donna Vekic",              "CRO", 17,  1770, 1770, 28),
-    ("Diana Shnaider",           "RUS", 18,  1720, 1770, 21),
-    ("Elina Svitolina",          "UKR", 19,  1740, 1760, 30),
-    ("Beatriz Haddad Maia",      "BRA", 20,  1720, 1760, 29),
-    ("Maria Sakkari",            "GRE", 21,  1730, 1770, 29),
-    ("Amanda Anisimova",         "USA", 22,  1720, 1730, 23),
-    ("Caroline Dolehide",        "USA", 23,  1680, 1700, 26),
-    ("Marketa Vondrousova",      "CZE", 24,  1820, 1780, 25),
-    ("Katerina Siniakova",       "CZE", 25,  1700, 1720, 29),
-    ("Karolina Muchova",         "CZE", 26,  1730, 1770, 28),
-    ("Anastasia Pavlyuchenkova", "RUS", 27,  1700, 1730, 33),
-    ("Ekaterina Alexandrova",    "RUS", 28,  1710, 1730, 30),
-    ("Yulia Putintseva",         "KAZ", 29,  1700, 1720, 30),
-    ("Sorana Cirstea",           "ROU", 30,  1700, 1720, 34),
-    ("Veronika Kudermetova",     "RUS", 31,  1700, 1720, 27),
-    ("Leylah Fernandez",         "CAN", 32,  1720, 1740, 23),
-    ("Clara Tauson",             "DEN", 33,  1700, 1720, 22),
-    ("Anna Bondar",              "HUN", 34,  1670, 1690, 26),
-    ("Katie Boulter",            "GBR", 35,  1750, 1710, 28),
-    ("Xinyu Wang",               "CHN", 36,  1690, 1720, 24),
-    ("Caroline Garcia",          "FRA", 37,  1700, 1730, 30),
-    ("Bianca Andreescu",         "CAN", 38,  1700, 1720, 25),
-    ("Sofia Kenin",              "USA", 39,  1690, 1710, 26),
-    ("Peyton Stearns",           "USA", 40,  1700, 1720, 23),
-    ("Marie Bouzkova",           "CZE", 41,  1690, 1700, 27),
-    ("Anastasia Potapova",       "RUS", 42,  1690, 1710, 24),
-    ("Elise Mertens",            "BEL", 43,  1690, 1710, 29),
-    ("Magda Linette",            "POL", 44,  1680, 1700, 32),
-    ("Laura Siegemund",          "GER", 45,  1700, 1700, 36),
-    ("Nadia Podoroska",          "ARG", 46,  1670, 1690, 28),
-    ("Jil Teichmann",            "SUI", 47,  1690, 1700, 27),
-    ("Ajla Tomljanovic",         "AUS", 48,  1700, 1700, 32),
-    ("Camila Giorgi",            "ITA", 49,  1700, 1700, 33),
-    ("Lesia Tsurenko",           "UKR", 50,  1680, 1690, 35),
-    ("Alycia Parks",             "USA", 51,  1690, 1700, 24),
-    ("Yafan Wang",               "CHN", 52,  1670, 1680, 29),
-    ("Victoria Azarenka",        "BLR", 53,  1710, 1720, 37),
-    ("Dayana Yastremska",        "UKR", 54,  1700, 1720, 24),
-    ("Zhuoxuan Bai",             "CHN", 55,  1660, 1680, 22),
-    ("Rebecca Sramkova",         "SVK", 56,  1670, 1680, 28),
-    ("Sloane Stephens",          "USA", 57,  1680, 1690, 33),
-    ("Tamara Korpatsch",         "GER", 58,  1680, 1680, 29),
-    ("Harriet Dart",             "GBR", 59,  1700, 1690, 28),
-    ("Lin Zhu",                  "CHN", 60,  1660, 1680, 28),
-    ("Katerina Baindl",          "UKR", 61,  1660, 1670, 26),
-    ("Viktoriya Tomova",         "BUL", 62,  1660, 1670, 30),
-    ("Greet Minnen",             "BEL", 63,  1660, 1670, 28),
-    ("Naomi Osaka",              "JPN", 64,  1710, 1750, 29),
-]
+def train_wta_model(df_train, df_calib, df_val):
+    """Same structure as train_atp_model but using WTA data."""
+    rankings = load_wta_rankings()
+
+    print("\n[WTA] Building ELO + features for training set (2010–2022)...")
+    engine = EloEngine()
+    engine.process_dataframe(df_train)
+    snaps_tr = engine.get_snapshots_df()
+    stats_tr = _build_stats(df_train)
+    X_tr, y_tr, w_tr = build_features(df_train, snaps_tr, rankings=rankings, **stats_tr)
+    grass_tr = (snaps_tr["surface"] == "Grass").sum()
+    print(f"[WTA] Training samples: {len(X_tr):,}  "
+          f"(all surfaces × 2 symmetric; grass matches: {grass_tr:,})")
+
+    xgb = XGBClassifier(
+        n_estimators=600,
+        max_depth=4,
+        learning_rate=0.04,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        min_child_weight=3,
+        reg_alpha=0.1,
+        reg_lambda=1.0,
+        eval_metric="logloss",
+        use_label_encoder=False,
+        random_state=42,
+        verbosity=0,
+    )
+    xgb.fit(X_tr, y_tr, sample_weight=w_tr)
+
+    print("[WTA] Calibrating on 2023 data (isotonic regression)...")
+    engine.process_dataframe(df_calib)
+    snaps_cal = engine.get_snapshots_df()
+    stats_cal = _build_stats(pd.concat([df_train, df_calib]))
+    X_cal, y_cal, _ = build_features(df_calib, snaps_cal, rankings=rankings, **stats_cal)
+    grass_mask = X_cal[:, FEATURE_NAMES.index("is_grass")] == 1.0
+    X_cal_g, y_cal_g = X_cal[grass_mask], y_cal[grass_mask]
+    print(f"[WTA] Calibration grass samples: {len(X_cal_g):,}")
+
+    calibrated = CalibratedClassifierCV(xgb, cv="prefit", method="isotonic")
+    calibrated.fit(X_cal_g, y_cal_g)
+
+    print("[WTA] Evaluating on validation set (2024–2025)...")
+    engine.process_dataframe(df_val)
+    snaps_val = engine.get_snapshots_df()
+    stats_val = _build_stats(pd.concat([df_train, df_calib, df_val]))
+    X_val, y_val, _ = build_features(df_val, snaps_val, rankings=rankings, **stats_val)
+    g_mask = X_val[:, FEATURE_NAMES.index("is_grass")] == 1.0
+    X_g, y_g = X_val[g_mask], y_val[g_mask]
+    print(f"[WTA] Validation grass samples: {len(X_g):,}")
+
+    raw_proba = xgb.predict_proba(X_g)[:, 1]
+    cal_proba = calibrated.predict_proba(X_g)[:, 1]
+
+    raw_ll = _print_metrics(y_g, raw_proba, label="Uncalibrated XGBoost — ", tag="WTA")
+    cal_ll = _print_metrics(y_g, cal_proba, label="Calibrated model — ",     tag="WTA")
+
+    if cal_ll > raw_ll:
+        print("\n[WTA] Calibration increased loss — using uncalibrated model for predictions.")
+        final_model = xgb
+    else:
+        final_model = calibrated
+
+    print("\n[WTA] Feature importances (XGBoost):")
+    for name, imp in sorted(zip(FEATURE_NAMES, xgb.feature_importances_),
+                             key=lambda x: -x[1]):
+        print(f"       {name:<24} {imp:.4f}")
+
+    return final_model, engine, stats_val, rankings
 
 
-def simulate_wta_wimbledon(n_sims=N_SIMS):
-    players = [{"name": p[0], "country": p[1], "rank": p[2],
-                "elo_grass": p[3], "elo_all": p[4], "age": p[5]}
-               for p in WTA_PLAYERS]
-    n    = len(players)
-    wins = np.zeros(n, dtype=np.int32)
-    rng  = np.random.default_rng(42)
-
-    seeds    = players[:32]
-    unseeded = players[32:]
-
-    seed_pos64  = [0, 63, 31, 32, 15, 48, 16, 47]
-    slots_9_16  = [7, 8, 23, 24, 39, 40, 55, 56]
-    slots_17_32 = [3, 4, 11, 12, 19, 20, 27, 28, 35, 36, 43, 44, 51, 52, 59, 60]
-
-    for _ in range(n_sims):
-        rng.shuffle(unseeded)
-        bracket = [None] * 64
-
-        for i, pos in enumerate(seed_pos64[:8]):
-            bracket[pos] = seeds[i]
-
-        s916 = seeds[8:16].copy(); rng.shuffle(s916)
-        for i, pos in enumerate(slots_9_16):
-            bracket[pos] = s916[i]
-
-        s1732 = seeds[16:32].copy(); rng.shuffle(s1732)
-        for i, pos in enumerate(slots_17_32):
-            bracket[pos] = s1732[i]
-
-        uns = iter(unseeded)
-        for j in range(64):
-            if bracket[j] is None:
-                bracket[j] = next(uns)
-
-        curr = bracket[:]
-        while len(curr) > 1:
-            nxt = []
-            for i in range(0, len(curr), 2):
-                p1, p2 = curr[i], curr[i+1]
-                prob = 1.0 / (1.0 + 10.0 ** ((p2["elo_grass"] - p1["elo_grass"]) / 400.0))
-                nxt.append(p1 if rng.random() < prob else p2)
-            curr = nxt
-
-        idx = next(i for i, p in enumerate(players) if p["name"] == curr[0]["name"])
-        wins[idx] += 1
-
-    result = pd.DataFrame(players)
-    result["win_pct"] = wins / n_sims * 100
-    return result.sort_values("win_pct", ascending=False)
+def simulate_wta_wimbledon(model, draw, stats, rankings, n_sims=N_SIMS):
+    """Monte Carlo simulation of WTA Wimbledon 2026 (128-player bracket)."""
+    return simulate_atp_wimbledon(model, draw, stats, rankings, n_sims)
 
 
 # ---------------------------------------------------------------------------
@@ -697,46 +677,57 @@ def print_results(label, df, top_n=20):
         print(f"  {i:<5} {row['name']:<30} {country:<8} {row['win_pct']:>6.2f}%")
 
 
-def main():
-    print("=" * 60)
-    print("  WIMBLEDON 2026 PREDICTION SYSTEM  (v2)")
-    print("  ELO + XGBoost + Isotonic Calibration")
-    print("=" * 60)
-
-    # ---- ATP ---------------------------------------------------------------
-    print("\n[ATP] Loading match data (2010–2026)...")
-    df_all = load_atp_data(start_year=2010, end_year=2026)
+def _run_tour(tour: str, load_data_fn, load_rankings_fn, load_names_fn,
+              train_fn, simulate_fn):
+    """Generic pipeline runner for ATP or WTA."""
+    tag = f"[{tour}]"
+    print(f"\n{tag} Loading match data (2010–2026)...")
+    df_all   = load_data_fn(start_year=2010, end_year=2026)
     df_train = df_all[df_all["tourney_date"].dt.year <= TRAIN_END_YEAR]
     df_calib = df_all[df_all["tourney_date"].dt.year == CALIB_YEAR]
     df_val   = df_all[(df_all["tourney_date"].dt.year >= 2024) &
                       (df_all["tourney_date"].dt.year <= 2025)]
     df_2026  = df_all[df_all["tourney_date"].dt.year == 2026]
-    print(f"[ATP] Train: {len(df_train):,}  Calib: {len(df_calib):,}  "
+    print(f"{tag} Train: {len(df_train):,}  Calib: {len(df_calib):,}  "
           f"Val: {len(df_val):,}  2026: {len(df_2026):,}")
 
-    model, engine, stats_val, rankings = train_atp_model(df_train, df_calib, df_val)
+    model, engine, _, rankings = train_fn(df_train, df_calib, df_val)
 
-    print("\n[ATP] Updating ELO with 2026 results...")
+    print(f"\n{tag} Updating ELO with 2026 results...")
     engine.process_dataframe(df_2026)
     stats_full = _build_stats(df_all)
 
-    player_names = load_player_names()
+    player_names = load_names_fn()
     draw = get_draw_players(engine, rankings, player_names)
 
-    # Attach country codes
     pid_to_ioc = {}
-    for _, row in df_all[["winner_id","winner_ioc"]].drop_duplicates().iterrows():
+    for _, row in df_all[["winner_id", "winner_ioc"]].drop_duplicates().iterrows():
         pid_to_ioc[row["winner_id"]] = row["winner_ioc"]
     draw["country"] = draw["player_id"].map(pid_to_ioc).fillna("—")
 
-    print(f"\n[ATP] Running {N_SIMS:,} Wimbledon 2026 simulations...")
-    atp_results = simulate_atp_wimbledon(model, draw, stats_full, rankings)
+    print(f"\n{tag} Running {N_SIMS:,} Wimbledon 2026 simulations...")
+    results = simulate_fn(model, draw, stats_full, rankings)
+    return results
 
+
+def main():
+    print("=" * 60)
+    print("  WIMBLEDON 2026 PREDICTION SYSTEM  (v3)")
+    print("  ELO + XGBoost + Isotonic Calibration")
+    print("=" * 60)
+
+    atp_results = _run_tour(
+        "ATP",
+        load_atp_data, load_current_rankings, load_player_names,
+        train_atp_model, simulate_atp_wimbledon,
+    )
     print_results("ATP MEN'S WIMBLEDON 2026 — WIN PROBABILITIES", atp_results)
 
-    # ---- WTA ---------------------------------------------------------------
-    print(f"\n[WTA] Running {N_SIMS:,} Wimbledon 2026 simulations (ELO model)...")
-    wta_results = simulate_wta_wimbledon()
+    wta_results = _run_tour(
+        "WTA",
+        load_wta_data, load_wta_rankings, load_wta_player_names,
+        train_wta_model, simulate_wta_wimbledon,
+    )
     print_results("WTA WOMEN'S WIMBLEDON 2026 — WIN PROBABILITIES", wta_results)
 
     atp_fav = atp_results.iloc[0]
@@ -744,7 +735,7 @@ def main():
     print(f"\n{'='*60}")
     print(f"  PREDICTED WINNERS")
     print(f"  Men's:   {atp_fav['name']} ({atp_fav['country']})  — {atp_fav['win_pct']:.1f}%")
-    print(f"  Women's: {wta_fav['name']} ({wta_fav.get('country','—')})  — {wta_fav['win_pct']:.1f}%")
+    print(f"  Women's: {wta_fav['name']} ({wta_fav['country']})  — {wta_fav['win_pct']:.1f}%")
     print(f"{'='*60}\n")
 
 

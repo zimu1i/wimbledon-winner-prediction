@@ -21,10 +21,10 @@ python3 tennis_predictor/wimbledon_predictor.py
 **Women's (WTA)**
 | Rank | Player | Country | Win % |
 |------|--------|---------|-------|
-| 1 | Elena Rybakina | KAZ | 17.7% |
-| 2 | Barbora Krejcikova | CZE | 11.7% |
-| 3 | Aryna Sabalenka | BLR | 7.1% |
-| 4 | Ons Jabeur | TUN | 5.7% |
+| 1 | Aryna Sabalenka | BLR | 21.6% |
+| 2 | Iga Swiatek | POL | 16.8% |
+| 3 | Elena Rybakina | KAZ | 15.8% |
+| 4 | Amanda Anisimova | USA | 7.0% |
 
 ## Approach
 
@@ -53,13 +53,16 @@ python3 tennis_predictor/wimbledon_predictor.py
 - AUC-ROC: 0.774
 - Precision at 70%+ confidence: 79.6%
 
-### WTA (Women's) — ELO simulation
+### WTA (Women's) — identical ML pipeline
 
-No WTA match data is included in this repo. Win probabilities are derived from embedded grass-court ELO ratings for the top 64 players, estimated from recent Wimbledon results (2022–2025 champions/finalists) and current WTA rankings. The same 10,000-iteration Monte Carlo bracket simulation is used.
+Uses the same ELO + XGBoost + Monte Carlo pipeline as ATP, trained on real WTA match data from [`tennis_wta`](tennis_wta/) (58,694 training examples, 1,166 validation grass matches). Isotonic calibration is applied only when it improves validation log-loss; otherwise the uncalibrated XGBoost is used directly.
 
 ## Data
 
-ATP match and ranking data from [`tennis_atp`](tennis_atp/) (Jeff Sackmann / [github.com/JeffSackmann/tennis_atp](https://github.com/JeffSackmann/tennis_atp)), covering 1968–2026. Only main-tour events (Grand Slams, Masters, ATP 500/250, Finals) are used. Retirements and walkovers are excluded.
+- ATP: [`tennis_atp`](tennis_atp/) — Jeff Sackmann / [github.com/JeffSackmann/tennis_atp](https://github.com/JeffSackmann/tennis_atp)
+- WTA: [`tennis_wta`](tennis_wta/) — Jeff Sackmann / [github.com/JeffSackmann/tennis_wta](https://github.com/JeffSackmann/tennis_wta)
+
+Both cover 1968–2026. Only main-tour events are used (ATP: Grand Slams, Masters, 500/250, Finals; WTA: Grand Slams, Premier Mandatory/Premier/International, Finals). Retirements and walkovers are excluded.
 
 ## Dependencies
 
