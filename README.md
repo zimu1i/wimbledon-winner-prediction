@@ -1,4 +1,4 @@
-# Wimbledon 2026 Winner Prediction
+# Wimbledon 2026 Winner Prediction 🎾
 
 Machine learning system to predict the winner of the 2026 Wimbledon Championships for both the Men's (ATP) and Women's (WTA) draws using historical match data, ELO ratings, XGBoost with isotonic calibration, and SHAP-based feature analysis.
 
