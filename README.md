@@ -29,7 +29,7 @@ python3 metrics/evaluate_model.py
 jupyter notebook notebooks/analysis.ipynb
 ```
 
-## Results (as of June 2026)
+## Results (as of June 9, 2026 — post French Open)
 
 ### ⚠️ Alcaraz withdrawal — draw updated
 
@@ -37,28 +37,36 @@ Carlos Alcaraz (ESP, World No. 2) has announced he will not compete at Wimbledon
 
 His withdrawal significantly reshuffles the draw:
 
-| | Original favourite | Updated (Alcaraz out) |
+| | Original (pre-French Open) | Updated (Alcaraz out + French Open data) |
 |---|---|---|
-| **Winner** | Carlos Alcaraz (ESP) — 33.1% | Jannik Sinner (ITA) — 28.0% |
-| **Runner-up** | Jannik Sinner (ITA) — 22.1% | Novak Djokovic (SRB) — 24.6% |
+| **Winner** | Carlos Alcaraz (ESP) — 33.1% | Jannik Sinner (ITA) — 35.2% |
+| **Runner-up** | Jannik Sinner (ITA) — 22.1% | Novak Djokovic (SRB) — 21.4% |
 
-With Alcaraz's ~33% probability redistributed, **Sinner and Djokovic** absorb the bulk — Sinner by virtue of the highest remaining ELO and Grand Slam win rate, Djokovic from accumulated grass ELO across his six Wimbledon titles. Zverev climbs from 9.2% to 15.3%, and Taylor Fritz enters the top 4 for the first time.
+With Alcaraz's ~33% redistributed and French Open form baked in, **Sinner** now leads decisively at 35.2% — driven by updated ELO after his French Open results and the highest remaining Grand Slam win rate. Djokovic holds second at 21.4% from accumulated grass ELO across his six Wimbledon titles. Zverev climbs from 9.2% to 15.4%. The WTA draw sees Madison Keys rise to 4th (6.4%) on the back of strong 2026 hardcourt and clay form.
 
-**Men's (ATP)**
+**Men's (ATP)** — Alcaraz withdrawn
 | Rank | Player | Country | Win % |
 |------|--------|---------|-------|
-| 1 | Jannik Sinner | ITA | 28.0% |
-| 2 | Novak Djokovic | SRB | 24.6% |
-| 3 | Alexander Zverev | GER | 15.3% |
-| 4 | Taylor Fritz | USA | 4.5% |
+| 1 | Jannik Sinner | ITA | 35.2% |
+| 2 | Novak Djokovic | SRB | 21.4% |
+| 3 | Alexander Zverev | GER | 15.4% |
+| 4 | Taylor Fritz | USA | 3.2% |
+| 5 | Ben Shelton | USA | 2.9% |
+| 6 | Daniil Medvedev | RUS | 2.9% |
+| 7 | Jack Draper | GBR | 2.5% |
+| 8 | Lorenzo Musetti | ITA | 1.7% |
 
 **Women's (WTA)**
 | Rank | Player | Country | Win % |
 |------|--------|---------|-------|
-| 1 | Aryna Sabalenka | BLR | 21.6% |
-| 2 | Iga Swiatek | POL | 16.8% |
-| 3 | Elena Rybakina | KAZ | 15.8% |
-| 4 | Amanda Anisimova | USA | 7.0% |
+| 1 | Aryna Sabalenka | BLR | 19.6% |
+| 2 | Iga Swiatek | POL | 15.8% |
+| 3 | Elena Rybakina | KAZ | 13.9% |
+| 4 | Madison Keys | USA | 6.4% |
+| 5 | Elina Svitolina | UKR | 4.9% |
+| 6 | Jessica Pegula | USA | 4.4% |
+| 7 | Amanda Anisimova | USA | 4.3% |
+| 8 | Mirra Andreeva | RUS | 3.5% |
 
 ## Project structure
 
